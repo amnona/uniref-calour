@@ -5,9 +5,11 @@ import time
 import os
 import json
 import sqlite3
+from collections import defaultdict
 import numpy as np
 
 from calour.database import Database
+from calour.uniref_experiment import UniRefExperiment
 
 logger = getLogger(__name__)
 
@@ -259,6 +261,8 @@ class Uniref(Database):
             shortdesc.append( ({'annotationtype':'other'},'uniref query failed. code %d' % res.code) )
             logger.debug(shortdesc)
             return shortdesc
+        if 'length' in res and res['length'] is not None:
+            shortdesc.append([{'annotationtype':'other'},'length: %d' % res['length']])
         if 'names' not in res:
             logger.debug('names empty')
             res['names'] = []
@@ -543,3 +547,54 @@ class Uniref(Database):
         res['organisms'] = list(set(organism_names))
         self._set_cached_uniref_info(uniref_id, res)
         return res
+
+    def get_organisms(self, exp: UniRefExperiment, inplace: bool = False) -> UniRefExperiment:
+        '''Add "num_organisms" and "max_organism" columns to the feature metadata, where:
+        - "num_organisms" is the number of unique organisms associated with each feature (uniref id)
+        - "max_organism" is the organism that appears most frequently among the members of the uniref id
+        
+        Parameters
+        ----------
+        exp : calour.UniRefExperiment
+            The UniRefExperiment containing the feature metadata to update.
+        inplace : bool, optional
+            If True, modify the feature metadata in place. If False, return a new calour Experiment with the updated metadata. Default is False.
+        Returns
+        -------
+        calour.UniRefExperiment
+            If inplace is False, returns a new UniRefExperiment with the updated feature metadata. If inplace is True, returns the same UniRefExperiment with modified feature metadata.
+        '''
+        if not inplace:
+            exp = exp.copy()
+        all_org_counts = []
+        for crow in exp.feature_metadata.iterrows():
+            org_counts = defaultdict(int)
+            res = self._get_uniref_info(crow[0])
+            corganisms = res.get('organisms', [])
+            # go over corganisms and change some names:
+            # - if starts with "Candidatus " - remove this prefix
+            # if it is "human gut metagenome" - change to "metagenome"
+            # if it starts with "uncultured " - remove this prefix
+            # if it is "gut metagenome" - change to "metagenome"
+            for i, org in enumerate(corganisms):
+                if org.startswith('Candidatus '):
+                    corganisms[i] = org[len('Candidatus '):]
+                elif org == 'human gut metagenome':
+                    corganisms[i] = 'metagenome'
+                elif org.startswith('uncultured '):
+                    corganisms[i] = org[len('uncultured '):]
+                elif org == 'gut metagenome':
+                    corganisms[i] = 'metagenome'
+
+            row_org = [x.split(' ')[0] for x in corganisms]
+            # count the number of times each organism appears in the row    org_counts = {}
+            for org in row_org:
+                org_counts[org] += 1
+            all_org_counts.append(org_counts)
+        org_num = [len(x) for x in all_org_counts]
+        # get the organism with max count for each entry
+        max_org = [max(x, key=x.get) if x else None for x in all_org_counts]
+        exp.feature_metadata['num_organisms'] = org_num
+        exp.feature_metadata['max_organism'] = max_org
+        return exp
+    
