@@ -14,7 +14,7 @@ from calour.uniref_experiment import UniRefExperiment
 logger = getLogger(__name__)
 
 
-class Uniref(Database):
+class UniRef(Database):
     '''uniref calour interface
     '''
     def __init__(self, exp=None):
