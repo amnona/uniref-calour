@@ -43,6 +43,9 @@ class UniRef(Database):
         super().__init__(exp=exp, database_name='uniref', methods=['get'])
         self.uniref_url = 'https://rest.uniprot.org/'
         self.quickgo_url = 'https://www.ebi.ac.uk/QuickGO/services'
+        self.cache_uniref_db_path = os.path.expanduser(
+            os.environ.get('UNIREF_CALOUR_CACHE_UNIREF_DB', '~/databases/uniref/2026-01/uniref50.db')
+        )
         self.cache_db_path = os.path.expanduser(
             os.environ.get('UNIREF_CALOUR_CACHE_DB', '~/.cache/uniref_calour/uniref_cache.sqlite')
         )
@@ -443,7 +446,55 @@ class UniRef(Database):
 
         return summary
 
-    def _get_uniref_info(self, uniref_id: str, use_cache: bool = True) -> dict:
+
+    def _get_uniref_info_local(self, uniref_id: str) -> dict | None:
+        '''Get uniref info from the local cache database. Returns None if not found.
+        
+        Parameters
+        ----------
+        uniref_id : str
+            the uniref id to query (i.e. 'UniRef90_A0A174LDE8')
+        
+        Returns
+        -------
+        dict or None
+            a dict with the following keys:
+                'go_terms' : list of str
+                    the list of go terms associated with this uniref id
+                'accessions' : list of str
+                    the list of accessions associated with this uniref id
+                'names' : list of str
+                    the list of protein names associated with this uniref id
+                'length' : int
+                    the average sequence length of the members of this uniref id
+                'organisms' : list of str
+                    the list of unique organism names associated with this uniref id
+            or None if not found in the local cache.
+        '''
+        res = {}
+        res['go_terms'] = []
+        res['accessions'] = []
+        res['names'] = []
+        res['length'] = 0
+        res['organisms'] = []
+        try:
+            conn = sqlite3.connect(self.cache_uniref_db_path)
+            cursor = conn.cursor()
+            cursor.execute('SELECT uniref_id, taxons, names, go_ids, accessions, avg_length FROM uniref WHERE uniref_id = ?', (uniref_id,))
+            row = cursor.fetchone()
+            if row:
+                res['go_terms'] = row[3].split(',') if row[3] else []
+                res['accessions'] = row[4].split(',') if row[4] else []
+                res['names'] = row[2].split(',') if row[2] else []
+                res['length'] = int(row[5]) if row[5] else 0
+                res['organisms'] = row[1].split(',') if row[1] else []
+        except Exception as e:
+            logger.warning('failed to connect to local uniref cache database (%s): %s', self.cache_uniref_db_path, e)
+            return res
+        logger.debug('for uniref id %s, local cache returned %d go terms, %d accessions, %d names, length %d, %d organisms', uniref_id, len(res['go_terms']), len(res['accessions']), len(res['names']), res['length'], len(res['organisms']))
+        return res
+
+    def _get_uniref_info(self, uniref_id: str, use_cache: bool = True, use_uniref_local: bool = True) -> dict:
         '''Get go terms for a uniref id
         First queries uniref to get the list of member accessions, then queries each accession in quickgo to get go terms, then returns a dict of uniref_id -> list of go terms
 
@@ -451,6 +502,11 @@ class UniRef(Database):
         ----------
         uniref_id : str
             the uniref id to query (i.e. 'UniRef90_A0A174LDE8')
+        use_cache : bool, optional
+            whether to use the local cache (if available) to avoid querying uniref and quickgo. Default is True.
+        use_uniref_local : bool, optional
+            whether to use the local uniref cache (if available) to avoid querying uniref. Default is True.
+            The uniref local database is created from the uniref50.xml file using the shotgun repository uniref-to-db.py program
 
         Returns
         -------
@@ -473,43 +529,52 @@ class UniRef(Database):
             if cached is not None:
                 logger.debug('cache hit for %s', uniref_id)
                 return cached
-
-        url = f"{self.uniref_url}/uniref/{uniref_id}/members/stream"
-        r = requests.get(url, timeout=30)
-        if r.status_code != 200:
-            logger.error('uniref query (%s) failed with code %d', uniref_id, r.status_code)
-            return {'go_terms': [], 'accessions': [], 'names': [], 'length': 0}
-        r = r.json()['results']
-        logger.debug('uniref query for %s returned %d members', uniref_id, len(r))
         seq_lengths = []
         seq_len = 0
         qnames = []
         protein_names = []
         organism_names = []
         qnames_for_go_terms = []
-        for member in r:
-            qname = None
-            if 'proteinName' in member:
-                protein_names.append(member['proteinName'])
-            if 'accessions' in member and member['accessions']:
-                qname = member['accessions'][0]
-                qnames_for_go_terms.append(qname.split('_')[0])
-            elif 'memberIdType' in member:
-                if member['memberIdType'] == 'UniProtKB ID' or member['memberIdType'] == 'UniParc':
-                    qname = member['memberId']
-                if member['memberIdType'] == 'UniProtKB ID':
-                    qnames_for_go_terms.append(member['memberId'].split('_')[0])
-            if qname is None:
-                    if 'uniparcid' in member:
-                        qname = member['uniparcid']
-            if qname:
-                qnames.append(qname)
-            if 'sequenceLength' in member:
-                seq_lengths.append(member['sequenceLength'])
-            if 'organismName' in member:
-                organism_names.append(member['organismName'])
-        if seq_lengths:
-            seq_len = int(np.mean(seq_lengths))
+        if use_uniref_local:
+            logger.debug('using local uniref cache for %s', uniref_id)
+            res = self._get_uniref_info_local(uniref_id)
+            if res is not None:
+                qnames = res['accessions']
+                seq_len = int(res['length'])
+                organism_names = res['organisms']
+                protein_names = res['names']
+                qnames_for_go_terms = list(set(qnames))
+        else:
+            url = f"{self.uniref_url}/uniref/{uniref_id}/members/stream"
+            r = requests.get(url, timeout=30)
+            if r.status_code != 200:
+                logger.error('uniref query (%s) failed with code %d', uniref_id, r.status_code)
+                return {'go_terms': [], 'accessions': [], 'names': [], 'length': 0}
+            r = r.json()['results']
+            logger.debug('uniref query for %s returned %d members', uniref_id, len(r))
+            for member in r:
+                qname = None
+                if 'proteinName' in member:
+                    protein_names.append(member['proteinName'])
+                if 'accessions' in member and member['accessions']:
+                    qname = member['accessions'][0]
+                    qnames_for_go_terms.append(qname.split('_')[0])
+                elif 'memberIdType' in member:
+                    if member['memberIdType'] == 'UniProtKB ID' or member['memberIdType'] == '  ':
+                        qname = member['memberId']
+                    if member['memberIdType'] == 'UniProtKB ID':
+                        qnames_for_go_terms.append(member['memberId'].split('_')[0])
+                if qname is None:
+                        if 'uniparcid' in member:
+                            qname = member['uniparcid']
+                if qname:
+                    qnames.append(qname)
+                if 'sequenceLength' in member:
+                    seq_lengths.append(member['sequenceLength'])
+                if 'organismName' in member:
+                    organism_names.append(member['organismName'])
+            if seq_lengths:
+                seq_len = int(np.mean(seq_lengths))
         
         # get the go term ids for all qnames
         qnames_for_go_terms = list(set(qnames_for_go_terms))
