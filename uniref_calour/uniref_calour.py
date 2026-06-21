@@ -333,6 +333,8 @@ class UniRef(Database):
             return []
 
         data = r.json()
+        logger.debug('quickgo query for %s returned %d annotations', uniprot_accession, len(data.get("results", [])))
+        logger.debug(data)
         out = []
         for row in data.get("results", []):
             out.append({
