@@ -264,7 +264,7 @@ class UniRef(Database):
         res = self._get_uniref_info(feature)
         if len(res['accessions']) == 0:
             logger.warning('uniref query failed:\n%s', res)
-            shortdesc.append( ({'annotationtype':'other'},'uniref query failed. code %d' % res.code) )
+            shortdesc.append( ({'annotationtype':'other'},'uniref query failed.') )
             logger.debug(shortdesc)
             return shortdesc
         if 'length' in res and res['length'] is not None:
