@@ -493,8 +493,11 @@ class UniRef(Database):
                 res['organisms'] = row[1].split(',') if row[1] else []
         except Exception as e:
             logger.warning('failed to connect to local uniref cache database (%s): %s', self.cache_uniref_db_path, e)
+            print('failed to connect to local uniref cache database (%s): %s', self.cache_uniref_db_path, e)
             return res
         logger.debug('for uniref id %s, local cache returned %d go terms, %d accessions, %d names, length %d, %d organisms', uniref_id, len(res['go_terms']), len(res['accessions']), len(res['names']), res['length'], len(res['organisms']))
+        print('for uniref id %s, local cache returned %d go terms, %d accessions, %d names, length %d, %d organisms', uniref_id, len(res['go_terms']), len(res['accessions']), len(res['names']), res['length'], len(res['organisms']))
+        print(res)
         return res
 
     def _get_uniref_info(self, uniref_id: str, use_cache: bool = True, use_uniref_local: bool = True) -> dict:
