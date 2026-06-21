@@ -17,7 +17,7 @@ logger = getLogger(__name__)
 class UniRef(Database):
     '''uniref calour interface
     '''
-    def __init__(self, exp=None):
+    def __init__(self, exp=None, uniref_db = '~/databases/uniref/2026-01/my_data_60M.db'):
         '''Called every time a database interface is created (e.g. when creating a plot, etc.)
         Can put here obtaining the database api address, handshake, etc.
 
@@ -43,8 +43,11 @@ class UniRef(Database):
         super().__init__(exp=exp, database_name='uniref', methods=['get'])
         self.uniref_url = 'https://rest.uniprot.org/'
         self.quickgo_url = 'https://www.ebi.ac.uk/QuickGO/services'
-        self.cache_uniref_db_path = os.path.expanduser(
-            os.environ.get('UNIREF_CALOUR_CACHE_UNIREF_DB', '~/databases/uniref/2026-01/uniref50.db')
+        if uniref_db is not None:
+            self.cache_uniref_db_path = os.path.expanduser(uniref_db)
+        else:
+            self.cache_uniref_db_path = os.path.expanduser(
+                os.environ.get('UNIREF_DB', '~/databases/uniref/2026-01/my_data_60M.db')
         )
         self.cache_db_path = os.path.expanduser(
             os.environ.get('UNIREF_CALOUR_CACHE_DB', '~/.cache/uniref_calour/uniref_cache.sqlite')
