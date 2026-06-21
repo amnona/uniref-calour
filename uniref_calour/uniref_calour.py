@@ -483,7 +483,7 @@ class UniRef(Database):
         try:
             conn = sqlite3.connect(self.cache_uniref_db_path)
             cursor = conn.cursor()
-            cursor.execute('SELECT uniref_id, taxons, names, go_ids, accessions, avg_length FROM uniref WHERE uniref_id = ?', (uniref_id,))
+            cursor.execute('SELECT uniref_id, taxons, names, go_ids, accessions, avg_length FROM entries WHERE uniref_id = ?', (uniref_id,))
             row = cursor.fetchone()
             if row:
                 res['go_terms'] = row[3].split(',') if row[3] else []
