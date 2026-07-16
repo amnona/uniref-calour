@@ -1,3 +1,4 @@
+from http import cookiejar
 from logging import getLogger
 import requests
 import webbrowser
@@ -17,7 +18,7 @@ logger = getLogger(__name__)
 class UniRef(Database):
     '''uniref calour interface
     '''
-    def __init__(self, exp=None, uniref_db = '~/databases/uniref/2026-01/my_data_60M.db'):
+    def __init__(self, exp=None, uniref_db = '~/databases/uniref/uniref50-2026-01.db'):
         '''Called every time a database interface is created (e.g. when creating a plot, etc.)
         Can put here obtaining the database api address, handshake, etc.
 
@@ -47,7 +48,7 @@ class UniRef(Database):
             self.cache_uniref_db_path = os.path.expanduser(uniref_db)
         else:
             self.cache_uniref_db_path = os.path.expanduser(
-                os.environ.get('UNIREF_DB', '~/databases/uniref/2026-01/my_data_60M.db')
+                os.environ.get('UNIREF_DB', '~/databases/uniref/uniref50-2026-01.db')
         )
         self.cache_db_path = os.path.expanduser(
             os.environ.get('UNIREF_CALOUR_CACHE_DB', '~/.cache/uniref_calour/uniref_cache.sqlite')
@@ -304,7 +305,7 @@ class UniRef(Database):
         Parameters
         ----------
         uniprot_accession : str
-            The UniProtKB accession (e.g., "P12345") to query for GO annotations.
+            The UniProtKB accession (e.g., "P12345") or comma separated list of accessions to query for GO annotations.
         limit : int, optional
             The maximum number of GO annotations to retrieve (default is 200).
 
@@ -318,32 +319,38 @@ class UniRef(Database):
                 - "go_name": The name of the GO term (e.g., "biological_process").
                 - "assigned_by": The source that assigned the annotation (e.g., "UniProtKB").
         """
+        out = []
         if len(uniprot_accession)==0:
             return []
+        max_num_accessions = 400
         url = f"{self.quickgo_url}/annotation/search"
+        accession_list = uniprot_accession.split(',')
+        num_accessions = len(accession_list)
         params = {
             "geneProductId": f"UniProtKB:{uniprot_accession}",
             "limit": limit,
             # 'includeFields': ["goId", "aspect", "evidenceCode", "goName", "assignedBy"]
         }
-        logger.debug('querying quickgo for %s' % uniprot_accession)
-        r = requests.get(url, params=params, headers={"Accept": "application/json"}, timeout=30)
-        if r.status_code != 200:
-            logger.warning('quickgo query (%s) failed with code %d. Error: %s' % (uniprot_accession, r.status_code, r.text))
-            return []
+        logger.debug('querying quickgo for %d accessions' % num_accessions)
+        for cpos in np.arange(0,num_accessions,max_num_accessions):
+            caccessions = accession_list[cpos:cpos+max_num_accessions]
+            params["geneProductId"] = ','.join([f"UniProtKB:{x}" for x in caccessions])
+            r = requests.get(url, params=params, headers={"Accept": "application/json"}, timeout=30)
+            if r.status_code != 200:
+                logger.warning('quickgo query (%s) failed with code %d. Error: %s' % (uniprot_accession, r.status_code, r.text))
+                continue
 
-        data = r.json()
-        logger.debug('quickgo query for %s returned %d annotations', uniprot_accession, len(data.get("results", [])))
-        logger.debug(data)
-        out = []
-        for row in data.get("results", []):
-            out.append({
-                "go_id": row.get("goId"),
-                "aspect": row.get("aspect"),
-                "evidence_code": row.get("evidenceCode"),
-                "go_name": row.get("goName"),
-                "assigned_by": row.get("assignedBy"),
-            })
+            data = r.json()
+            logger.debug('quickgo query for %s returned %d annotations', uniprot_accession, len(data.get("results", [])))
+            logger.debug(data)
+            for row in data.get("results", []):
+                out.append({
+                    "go_id": row.get("goId"),
+                    "aspect": row.get("aspect"),
+                    "evidence_code": row.get("evidenceCode"),
+                    "go_name": row.get("goName"),
+                    "assigned_by": row.get("assignedBy"),
+                })
 
         # deduplicate
         seen = set()
@@ -376,20 +383,25 @@ class UniRef(Database):
 
         missing_go_ids = [go_id for go_id in unique_go_ids if go_id not in mapping]
         if missing_go_ids:
-            url = f"{self.quickgo_url}/ontology/go/terms/" + ",".join(missing_go_ids)
-            r = requests.get(url, timeout=30)
-            if r.status_code != 200:
-                logger.warning('quickgo GO term query failed with code %d. Error: %s' % (r.status_code, r.text))
-                fetched_mapping = {go_id: None for go_id in missing_go_ids}
-            else:
-                data = r.json()
-                fetched_mapping = {}
-                for term in data.get("results", []):
-                    fetched_mapping[term["id"]] = term.get("name")
+            # the maximal number of go terms for each api query
+            fetched_mapping = {}
+            max_go_block_size=400
+            for cgo_pos in np.arange(0,len(missing_go_ids),max_go_block_size):
+                cmissing_go_ids = missing_go_ids[cgo_pos:cgo_pos+max_go_block_size]
+                url = f"{self.quickgo_url}/ontology/go/terms/" + ",".join(cmissing_go_ids)
+                r = requests.get(url, timeout=30)
+                if r.status_code != 200:
+                    logger.warning('quickgo GO term query failed with code %d. Error: %s' % (r.status_code, r.text))
+                    for go_id in cmissing_go_ids:
+                        fetched_mapping[go_id] = None
+                else:
+                    data = r.json()
+                    for term in data.get("results", []):
+                        fetched_mapping[term["id"]] = term.get("name")
 
-                # Keep misses as None so we do not re-query these IDs every time.
-                for go_id in missing_go_ids:
-                    fetched_mapping.setdefault(go_id, None)
+                    # Keep misses as None so we do not re-query these IDs every time.
+                    for go_id in cmissing_go_ids:
+                        fetched_mapping.setdefault(go_id, None)
 
             self._set_cached_go_term_names(fetched_mapping)
             mapping.update(fetched_mapping)
@@ -666,5 +678,61 @@ class UniRef(Database):
         max_org = [max(x, key=x.get) if x else None for x in all_org_counts]
         exp.feature_metadata['num_organisms'] = org_num
         exp.feature_metadata['max_organism'] = max_org
+        return exp
+    
+
+
+    def filter_organism(self, exp: UniRefExperiment, organisms: list[str], partial=True, inplace: bool = False, negate: bool = False) -> UniRefExperiment:
+        '''filter uniref ids by organism names
+        Keep (or discard) all uniref ids associated with one of the given organisms.
+        The filtering is done by checking if any of the organisms associated with each uniref id 
+        matches any of the given organisms.
+        
+        Parameters
+        ----------
+        exp : calour.UniRefExperiment
+            The UniRefExperiment containing the feature metadata to update.
+        organisms: list of str
+            the organisms to filter
+        partial: bool, optional
+            True (default): match organism based on partial match (start with)
+            False: require full exact match
+        inplace : bool, optional
+            If True, modify the feature metadata in place. If False, return a new calour Experiment with the updated metadata. Default is False.
+        negate: bool, optional
+            False (default): keep only uniref ids associated with any of the given organisms
+            True: drop all uniref ids associated with any of the given organisms
+        Returns
+        -------
+        calour.UniRefExperiment
+            If inplace is False, returns a new UniRefExperiment with the updated feature metadata. If inplace is True, returns the same UniRefExperiment with modified feature metadata.
+        '''
+        organisms = set([x.lower() for x in organisms])
+        all_keep = []
+        if not inplace:
+            exp = exp.copy()
+        for crow in exp.feature_metadata.iterrows():
+            res = self._get_uniref_info(crow[0])
+            corganisms = res.get('organisms', [])
+            if len(organisms) == 0:
+                keep = True
+            else:
+                keep = False
+                for corganism in corganisms:
+                    corganism = corganism.lower()
+                    if partial:
+                        if any(corganism.startswith(org) for org in organisms):
+                            keep = True
+                            break
+                    else:
+                        if corganism in organisms:
+                            keep = True
+                            break
+            if negate:
+                keep = not keep
+            all_keep.append(keep)
+        keep_cnt = sum(all_keep)
+        logger.info('found %d/%d uniref ids matching filter criteria' % (keep_cnt, len(all_keep)))
+        exp = exp.reorder(all_keep, axis='f', inplace=inplace)
         return exp
     
